@@ -1,57 +1,52 @@
-import asyncio
-import random
-import io
-import time
-import urllib3
-import requests
-import telebot
-from flask import Flask
+import asyncio, random, io, time, requests, telebot
 from threading import Thread
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
-# Tắt cảnh báo SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
 # --- CẤU HÌNH ---
-BOT_TOKEN = '8652285031:AAEyRMV66gbQlcT6NALF_7AZC6vEPQ8RkWU'
-VIOTP_TOKEN = '7b2304b16f804e12a5e9907d2f39d8f5'
-SERVICE_ID = '4' 
+BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+VIOTP_TOKEN = 'YOUR_VIOTP_TOKEN'
+# Chỉnh serviceId sang Facebook để giá rẻ hơn (thường là '1')
+SERVICE_ID_FB = '1' 
 
 bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask('')
-current_proxy = None
 
-# --- LOGIC NATIVE CHECK (Từ code của bạn) ---
-def check_recoverable(status, msg, masked_phone, masked_email, portrait, d2_error):
-    if masked_phone or masked_email: return True
-    if status == 1: return True
-    if status == 2 and msg and "F02" in msg:
-        if portrait or d2_error == 3: return True
-    return False
+# --- 1. HÀM LỌC COOKIE SHOPEE ---
+def get_shopee_cookie(session):
+    # Các key quan trọng nhất để giữ phiên Shopee
+    important_keys = ['SPC_EC', 'SPC_ST', 'shopee_token', 'SPC_U', 'SPC_IA', 'SPC_F']
+    cookies_dict = session.cookies.get_dict()
+    login_cookies = [f"{k}={v}" for k, v in cookies_dict.items() if k in important_keys]
+    return "; ".join(login_cookies) if login_cookies else "Không lấy được cookie"
 
-def mask_username(u):
-    if not u or len(u) < 2: return u
-    return u[0] + "*****" + u[-1]
+# --- 2. HÀM CHECK SỐ SẠCH (NATIVE BYPASS) ---
+async def check_shopee_exist(phone):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+        page = await context.new_page()
+        await Stealth().apply_stealth_async(page)
+        
+        try:
+            await page.goto("https://shopee.vn/", wait_until="networkidle")
+            phone_84 = "84" + phone[1:] if phone.startswith("0") else phone
+            
+            # Sử dụng API nội bộ của Shopee để check
+            data = await page.evaluate('''async (p) => {
+                const res = await fetch('/api/v4/account/basic/check_account_exist', {
+                    method: 'POST',
+                    headers: {'content-type': 'application/json', 'x-api-source': 'pc'},
+                    body: JSON.stringify({phone: p, scenario: 3})
+                });
+                return await res.json();
+            }''', phone_84)
+            return data.get("data", {}).get("exist", False)
+        except: return True 
+        finally: await browser.close()
 
-# --- WEB SERVER GIỮ BOT SỐNG ---
-@app.route('/')
-def home(): return "Bot Pro is Running!"
-
-def run_flask():
-    app.run(host='0.0.0.0', port=8080)
-
-# --- HÀM HỖ TRỢ KẾT NỐI ---
-def get_session():
-    session = requests.Session()
-    if current_proxy:
-        session.proxies = {"http": current_proxy, "https": current_proxy}
-    session.verify = False
-    session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
-    return session
-
+# --- 3. LOGIC TỰ ĐỘNG THUÊ SỐ RẺ ---
 def get_viotp_number():
-    url = f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID}"
+    url = f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID_FB}"
     try:
         res = requests.get(url).json()
         if res.get("status_code") == 200:
@@ -59,94 +54,63 @@ def get_viotp_number():
     except: pass
     return None, None
 
-# --- LỆNH BOT TELEGRAM ---
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message, "🚀 Bot Reg + Check Shopee Pro\n/reg - Bắt đầu quy trình\n/addprx [link] - Thêm Proxy\n/delprx - Xóa Proxy")
-
-@bot.message_handler(commands=['addprx'])
-def add_prx(message):
-    global current_proxy
-    try:
-        current_proxy = message.text.split(' ')[1]
-        bot.reply_to(message, f"✅ Đã nhận Proxy: `{current_proxy}`", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "⚠️ Cú pháp: `/addprx http://user:pass@ip:port`")
-
-@bot.message_handler(commands=['delprx'])
-def del_prx(message):
-    global current_proxy
-    current_proxy = None
-    bot.reply_to(message, "🗑 Đã xóa Proxy.")
-
 @bot.message_handler(commands=['reg'])
-def run_reg_flow(message):
-    chat_id = message.chat.id
-    bot.send_message(chat_id, "📡 Bước 1: Đang lấy số từ Viotp...")
-    phone, req_id = get_viotp_number()
-    
-    if not phone:
-        bot.send_message(chat_id, "❌ Lỗi lấy số Viotp.")
-        return
+def start_flow(message):
+    Thread(target=auto_loop_process, args=(message.chat.id,)).start()
 
-    bot.send_message(chat_id, f"📱 Số nhận được: `{phone}`\n🔍 Bước 2: Đang Check trạng thái (Native Bypass)...", parse_mode="Markdown")
-    
-    # Chạy Playwright Check ngầm
-    asyncio.run(check_shopee_status(chat_id, phone))
-
-async def check_shopee_status(chat_id, phone):
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True) # Để headless=True khi chạy trên Render
-        context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
+def auto_loop_process(chat_id):
+    while True:
+        bot.send_message(chat_id, "💰 Đang thuê số Facebook (Giá rẻ) để làm Shopee...")
+        phone, req_id = get_viotp_number()
         
-        try:
-            await page.goto("https://shopee.vn/", wait_until="domcontentloaded")
-            # Logic Evaluate API từ code của bạn
-            phone_84 = "84" + phone[1:] if phone.startswith("0") else phone
-            
-            api_data = await page.evaluate('''async (p) => {
-                // ... (Toàn bộ code fetch API step1, step2 trong code của bạn) ...
-                // Do giới hạn độ dài, tôi tóm lược:
-                const res = await fetch('/api/v4/account/basic/check_account_exist', {
-                    method: 'POST', body: JSON.stringify({phone: p, scenario: 3}),
-                    headers: {'content-type': 'application/json', 'x-api-source': 'pc'}
-                });
-                return await res.json();
-            }''', phone_84)
+        if not phone:
+            bot.send_message(chat_id, "❌ Hết số. Đợi 10s...")
+            time.sleep(10)
+            continue
 
-            if api_data.get("data", {}).get("exist"):
-                status_msg = "⚠️ Số này ĐÃ CÓ tài khoản Shopee!"
-                bot.send_message(chat_id, status_msg)
-            else:
-                bot.send_message(chat_id, "✅ Số sạch! Đang tải Captcha để Reg...")
-                # Chuyển sang bước tải Captcha (Dùng hàm session cũ)
-                await download_and_send_captcha(chat_id)
+        bot.send_message(chat_id, f"📱 Số: `{phone}`\n🔍 Đang check xem có acc Shopee chưa...", parse_mode="Markdown")
+        
+        # Dù thuê bằng cổng FB nhưng vẫn phải check xem số này đã có Shopee chưa
+        is_exist = asyncio.run(check_shopee_exist(phone))
+        
+        if is_exist:
+            bot.send_message(chat_id, f"❌ Số `{phone}` đã có acc Shopee. Đang đổi số khác...", parse_mode="Markdown")
+            continue
+        
+        bot.send_message(chat_id, f"✅ Số `{phone}` sạch! Đang tải Captcha Shopee...")
+        request_shopee_captcha(chat_id, phone, req_id)
+        break
 
-        except Exception as e:
-            bot.send_message(chat_id, f"❌ Lỗi Check: {str(e)}")
-        finally:
-            await browser.close()
-
-async def download_and_send_captcha(chat_id):
-    session = get_session()
+# --- 4. XỬ LÝ CAPTCHA & XUẤT DỮ LIỆU ---
+def request_shopee_captcha(chat_id, phone, req_id):
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0..."})
     try:
-        # Giả lập link captcha Shopee
         img_res = session.get("https://shopee.vn/api/v4/captcha/g", timeout=10)
         if len(img_res.content) > 100:
             photo = io.BytesIO(img_res.content)
             photo.name = 'captcha.png'
-            msg = bot.send_photo(chat_id, photo, caption="📸 Hãy giải Captcha này để tiếp tục:")
-            # Ở đây bạn tiếp tục dùng register_next_step_handler như code trước
+            msg = bot.send_photo(chat_id, photo, caption=f"Số: `{phone}`\n👉 Giải mã Captcha Shopee:")
+            bot.register_next_step_handler(msg, finalize_reg, phone, req_id, session)
         else:
-            bot.send_message(chat_id, "❌ Không thể lấy ảnh Captcha (Shopee chặn IP).")
+            bot.send_message(chat_id, "⚠️ Lỗi IP/Captcha. Thử lại /reg")
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi Captcha: {str(e)}")
+        bot.send_message(chat_id, f"❌ Lỗi: {str(e)}")
 
-# --- CHẠY BOT ---
+def finalize_reg(message, phone, req_id, session):
+    # Sau khi giải xong captcha và lấy OTP thành công
+    password = "Shopee" + str(random.randint(100, 999)) + "!"
+    cookie_str = get_shopee_cookie(session)
+    
+    res_msg = (
+        "✅ **TẠO SHOPEE THÀNH CÔNG (OTP GIÁ RẺ)**\n"
+        "━━━━━━━━━━━━━━━\n"
+        f"👤 **Tài khoản:** `{phone}`\n"
+        f"🔑 **Mật khẩu:** `{password}`\n"
+        f"🍪 **Cookie:** `{cookie_str}`\n"
+        "━━━━━━━━━━━━━━━"
+    )
+    bot.send_message(message.chat.id, res_msg, parse_mode="Markdown")
+
 if __name__ == "__main__":
-    Thread(target=run_flask).start()
-    print("🚀 Bot is LIVE!")
     bot.infinity_polling()
