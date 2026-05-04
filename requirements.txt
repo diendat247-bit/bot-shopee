@@ -1,6 +1,7 @@
 pyTelegramBotAPI
 requests
-requests[socks]
+playwright
+playwright-stealth
 flask
-urllib3
+
 
