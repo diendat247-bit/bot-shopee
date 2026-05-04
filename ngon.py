@@ -10,8 +10,8 @@ from threading import Thread
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CẤU HÌNH ---
-BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
-VIOTP_TOKEN = 'YOUR_VIOTP_TOKEN'
+BOT_TOKEN = '8652285031:AAEyRMV66gbQlcT6NALF_7AZC6vEPQ8RkWU'
+VIOTP_TOKEN = '7b2304b16f804e12a5e9907d2f39d8f5'
 SERVICE_ID = '4'  # Shopee ID trên Viotp
 
 bot = telebot.TeleBot(BOT_TOKEN)
