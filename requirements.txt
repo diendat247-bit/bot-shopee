@@ -1,3 +1,6 @@
 pyTelegramBotAPI
 requests
+requests[socks]
 flask
+urllib3
+
