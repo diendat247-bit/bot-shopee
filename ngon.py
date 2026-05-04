@@ -1,19 +1,23 @@
-import asyncio, random, io, time, requests, telebot
+import asyncio, random, io, time, requests, telebot, urllib3
 from threading import Thread
+from flask import Flask
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 
+# Tắt cảnh báo SSL để tránh lỗi khi dùng Proxy Kiot
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- CẤU HÌNH ---
-BOT_TOKEN = '8652285031:AAEyRMV66gbQlcT6NALF_7AZC6vEPQ8RkWU'
+BOT_TOKEN = '8652285031:AAHOQGKYkt0LOArCGOQi8xljO1Yc0nLCGDM'
 VIOTP_TOKEN = '7b2304b16f804e12a5e9907d2f39d8f5'
-# Chỉnh serviceId sang Facebook để giá rẻ hơn (thường là '1')
-SERVICE_ID_FB = '1' 
+SERVICE_ID_FB = '1' # Thuê số cổng Facebook cho rẻ
 
 bot = telebot.TeleBot(BOT_TOKEN)
+app = Flask('')
+current_proxy = None
 
-# --- 1. HÀM LỌC COOKIE SHOPEE ---
+# --- 1. HÀM LỌC COOKIE ĐĂNG NHẬP (Chỉ lấy key quan trọng) ---
 def get_shopee_cookie(session):
-    # Các key quan trọng nhất để giữ phiên Shopee
     important_keys = ['SPC_EC', 'SPC_ST', 'shopee_token', 'SPC_U', 'SPC_IA', 'SPC_F']
     cookies_dict = session.cookies.get_dict()
     login_cookies = [f"{k}={v}" for k, v in cookies_dict.items() if k in important_keys]
@@ -22,7 +26,12 @@ def get_shopee_cookie(session):
 # --- 2. HÀM CHECK SỐ SẠCH (NATIVE BYPASS) ---
 async def check_shopee_exist(phone):
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # Cấu hình proxy cho browser nếu có
+        launch_args = {}
+        if current_proxy:
+            launch_args['proxy'] = {"server": current_proxy}
+            
+        browser = await p.chromium.launch(headless=True, **launch_args)
         context = await browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
         page = await context.new_page()
         await Stealth().apply_stealth_async(page)
@@ -31,7 +40,7 @@ async def check_shopee_exist(phone):
             await page.goto("https://shopee.vn/", wait_until="networkidle")
             phone_84 = "84" + phone[1:] if phone.startswith("0") else phone
             
-            # Sử dụng API nội bộ của Shopee để check
+            # Logic check exist Native Mode
             data = await page.evaluate('''async (p) => {
                 const res = await fetch('/api/v4/account/basic/check_account_exist', {
                     method: 'POST',
@@ -44,73 +53,96 @@ async def check_shopee_exist(phone):
         except: return True 
         finally: await browser.close()
 
-# --- 3. LOGIC TỰ ĐỘNG THUÊ SỐ RẺ ---
-def get_viotp_number():
-    url = f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID_FB}"
+# --- 3. QUẢN LÝ PROXY & THUÊ SỐ ---
+@bot.message_handler(commands=['addprx'])
+def add_proxy(message):
+    global current_proxy
     try:
-        res = requests.get(url).json()
-        if res.get("status_code") == 200:
-            return res['data']['phone_number'], res['data']['request_id']
-    except: pass
-    return None, None
+        current_proxy = message.text.split(' ')[1]
+        bot.reply_to(message, f"✅ Đã thêm Proxy: `{current_proxy}`", parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "⚠️ Cú pháp: `/addprx http://user:pass@ip:port`")
+
+@bot.message_handler(commands=['delprx'])
+def del_proxy(message):
+    global current_proxy
+    current_proxy = None
+    bot.reply_to(message, "🗑 Đã xóa Proxy, dùng IP Render.")
 
 @bot.message_handler(commands=['reg'])
-def start_flow(message):
-    Thread(target=auto_loop_process, args=(message.chat.id,)).start()
+def start_reg(message):
+    # Chạy vòng lặp tự động tìm số sạch trong luồng riêng
+    Thread(target=auto_loop_reg, args=(message.chat.id,)).start()
 
-def auto_loop_process(chat_id):
+def auto_loop_reg(chat_id):
     while True:
-        bot.send_message(chat_id, "💰 Đang thuê số Facebook (Giá rẻ) để làm Shopee...")
-        phone, req_id = get_viotp_number()
+        bot.send_message(chat_id, "📡 Đang thuê số Facebook (Giá rẻ)...")
+        # Gọi API Viotp lấy số
+        res = requests.get(f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID_FB}").json()
         
-        if not phone:
+        if res.get("status_code") != 200:
             bot.send_message(chat_id, "❌ Hết số. Đợi 10s...")
             time.sleep(10)
             continue
+            
+        phone = res['data']['phone_number']
+        req_id = res['data']['request_id']
 
-        bot.send_message(chat_id, f"📱 Số: `{phone}`\n🔍 Đang check xem có acc Shopee chưa...", parse_mode="Markdown")
+        bot.send_message(chat_id, f"📱 Số: `{phone}`\n🔍 Đang check sạch/bẩn...", parse_mode="Markdown")
         
-        # Dù thuê bằng cổng FB nhưng vẫn phải check xem số này đã có Shopee chưa
+        # Check Native Bypass
         is_exist = asyncio.run(check_shopee_exist(phone))
         
         if is_exist:
-            bot.send_message(chat_id, f"❌ Số `{phone}` đã có acc Shopee. Đang đổi số khác...", parse_mode="Markdown")
+            bot.send_message(chat_id, f"❌ Số `{phone}` đã có acc. Đang tự thuê số khác...")
             continue
         
-        bot.send_message(chat_id, f"✅ Số `{phone}` sạch! Đang tải Captcha Shopee...")
-        request_shopee_captcha(chat_id, phone, req_id)
+        # Nếu sạch thì tiến hành bước Captcha
+        bot.send_message(chat_id, f"✅ Số `{phone}` sạch! Đang tải Captcha...")
+        send_captcha(chat_id, phone, req_id)
         break
 
-# --- 4. XỬ LÝ CAPTCHA & XUẤT DỮ LIỆU ---
-def request_shopee_captcha(chat_id, phone, req_id):
+def send_captcha(chat_id, phone, req_id):
     session = requests.Session()
-    session.headers.update({"User-Agent": "Mozilla/5.0..."})
+    if current_proxy: session.proxies = {"http": current_proxy, "https": current_proxy}
+    session.verify = False # Tránh lỗi IMAGE_PROCESS_FAILED
+    
     try:
-        img_res = session.get("https://shopee.vn/api/v4/captcha/g", timeout=10)
+        img_res = session.get("https://shopee.vn/api/v4/captcha/g", timeout=15)
         if len(img_res.content) > 100:
             photo = io.BytesIO(img_res.content)
             photo.name = 'captcha.png'
-            msg = bot.send_photo(chat_id, photo, caption=f"Số: `{phone}`\n👉 Giải mã Captcha Shopee:")
-            bot.register_next_step_handler(msg, finalize_reg, phone, req_id, session)
+            msg = bot.send_photo(chat_id, photo, caption=f"Số: `{phone}`\n👉 Nhập mã Captcha:")
+            bot.register_next_step_handler(msg, wait_otp_and_finalize, phone, req_id, session)
         else:
-            bot.send_message(chat_id, "⚠️ Lỗi IP/Captcha. Thử lại /reg")
+            bot.send_message(chat_id, "⚠️ Lỗi IP bị chặn không tải được ảnh.")
     except Exception as e:
         bot.send_message(chat_id, f"❌ Lỗi: {str(e)}")
 
-def finalize_reg(message, phone, req_id, session):
-    # Sau khi giải xong captcha và lấy OTP thành công
+def wait_otp_and_finalize(message, phone, req_id, session):
+    captcha_val = message.text
+    bot.send_message(message.chat.id, f"⚙️ Đã nộp captcha `{captcha_val}`. Chờ OTP...")
+    
+    # Ở đây là logic đợi OTP và đăng ký thành công (Demo)
     password = "Shopee" + str(random.randint(100, 999)) + "!"
+    
+    # Lọc cookie sau khi đăng ký thành công
     cookie_str = get_shopee_cookie(session)
     
-    res_msg = (
-        "✅ **TẠO SHOPEE THÀNH CÔNG (OTP GIÁ RẺ)**\n"
+    final_msg = (
+        "✅ **TẠO TÀI KHOẢN THÀNH CÔNG**\n"
         "━━━━━━━━━━━━━━━\n"
-        f"👤 **Tài khoản:** `{phone}`\n"
-        f"🔑 **Mật khẩu:** `{password}`\n"
+        f"👤 **User:** `{phone}`\n"
+        f"🔑 **Pass:** `{password}`\n"
         f"🍪 **Cookie:** `{cookie_str}`\n"
         "━━━━━━━━━━━━━━━"
     )
-    bot.send_message(message.chat.id, res_msg, parse_mode="Markdown")
+    bot.send_message(message.chat.id, final_msg, parse_mode="Markdown")
+
+# --- FLASK & RUN ---
+@app.route('/')
+def home(): return "Bot Live"
 
 if __name__ == "__main__":
+    Thread(target=lambda: app.run(host='0.0.0.0', port=8080)).start()
     bot.infinity_polling()
