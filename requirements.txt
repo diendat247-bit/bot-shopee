@@ -5,4 +5,3 @@ playwright-stealth
 flask
 urllib3
 requests[socks]
-
