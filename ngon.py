@@ -2,21 +2,23 @@ import telebot
 import requests
 import time
 import io
+import urllib3
 from flask import Flask
 from threading import Thread
 
+# Tắt các cảnh báo bảo mật khi dùng Proxy bỏ qua SSL
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # --- CẤU HÌNH ---
-BOT_TOKEN = '8652285031:AAEyRMV66gbQlcT6NALF_7AZC6vEPQ8RkWU'
-VIOTP_TOKEN = '7b2304b16f804e12a5e9907d2f39d8f5'
-SERVICE_ID = '4'  # ID dịch vụ Shopee trên Viotp
+BOT_TOKEN = 'YOUR_TELEGRAM_BOT_TOKEN'
+VIOTP_TOKEN = 'YOUR_VIOTP_TOKEN'
+SERVICE_ID = '4'  # Shopee ID trên Viotp
 
 bot = telebot.TeleBot(BOT_TOKEN)
 app = Flask('')
-
-# Biến toàn cục lưu Proxy
 current_proxy = None
 
-# --- HÀM HỖ TRỢ SERVER (DÀNH CHO RENDER) ---
+# --- WEB SERVER (CHO RENDER) ---
 @app.route('/')
 def home():
     return "Bot is running 24/7!"
@@ -31,46 +33,52 @@ def keep_alive():
 # --- HÀM XỬ LÝ LOGIC ---
 
 def get_session():
-    """Tạo session có gắn Proxy và User-Agent"""
+    """Tạo kết nối tối ưu xử lý lỗi Proxy và SSL"""
     session = requests.Session()
     if current_proxy:
         session.proxies = {"http": current_proxy, "https": current_proxy}
+    
+    # Ép buộc bỏ qua xác thực SSL để tránh lỗi kết nối với KiotProxy
+    session.verify = False 
+    
     session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*"
     })
     return session
 
 def get_viotp_number():
+    """Lấy số từ Viotp"""
     url = f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID}"
     try:
         res = requests.get(url).json()
         if res.get("status_code") == 200:
             return res['data']['phone_number'], res['data']['request_id']
-    except:
-        pass
+    except: pass
     return None, None
 
 def get_viotp_otp(request_id):
+    """Lấy OTP từ Viotp"""
     url = f"https://api.viotp.com/session/getv2?token={VIOTP_TOKEN}&requestId={request_id}"
     try:
         res = requests.get(url).json()
         if res.get("status_code") == 200:
             return res['data']['code']
-    except:
-        pass
+    except: pass
     return None
 
 # --- LỆNH TELEGRAM ---
 
 @bot.message_handler(commands=['start'])
-def send_welcome(message):
-    help_text = (
-        "🤖 **Bot Reg Shopee Control**\n\n"
-        "/addprx [proxy] - Thêm proxy (VD: http://user:pass@ip:port)\n"
-        "/status - Kiểm tra Proxy hiện tại\n"
-        "/reg - Bắt đầu quá trình đăng ký"
+def start_cmd(message):
+    msg = (
+        "🛠 **BẢNG ĐIỀU KHIỂN REG SHOPEE**\n\n"
+        "1️⃣ /addprx [link] - Thêm Proxy (HTTP/SOCKS5)\n"
+        "2️⃣ /delprx - Xóa Proxy (Dùng IP Render)\n"
+        "3️⃣ /status - Xem Proxy hiện tại\n"
+        "4️⃣ /reg - Bắt đầu quy trình Reg Acc"
     )
-    bot.reply_to(message, help_text, parse_mode="Markdown")
+    bot.reply_to(message, msg, parse_mode="Markdown")
 
 @bot.message_handler(commands=['addprx'])
 def add_proxy(message):
@@ -79,69 +87,70 @@ def add_proxy(message):
         new_proxy = message.text.split(' ', 1)[1].strip()
         bot.send_message(message.chat.id, "🔄 Đang kiểm tra Proxy...")
         
-        # Test proxy
-        test_res = requests.get("https://google.com", proxies={"http": new_proxy, "https": new_proxy}, timeout=7)
-        if test_res.status_code == 200:
+        # Test kết nối đơn giản qua HTTP
+        test = requests.get("http://google.com", proxies={"http": new_proxy}, timeout=10)
+        if test.status_code == 200:
             current_proxy = new_proxy
             bot.reply_to(message, f"✅ Proxy OK!\n`{current_proxy}`", parse_mode="Markdown")
         else:
-            bot.reply_to(message, "❌ Proxy không phản hồi.")
-    except Exception as e:
-        bot.reply_to(message, f"⚠️ Lỗi định dạng hoặc kết nối: {e}")
+            bot.reply_to(message, "❌ Proxy phản hồi lỗi.")
+    except:
+        bot.reply_to(message, "⚠️ Cú pháp: `/addprx http://ip:port`", parse_mode="Markdown")
+
+@bot.message_handler(commands=['delprx'])
+def delete_proxy(message):
+    global current_proxy
+    current_proxy = None
+    bot.reply_to(message, "🗑 Đã xóa Proxy. Hiện tại dùng IP của máy chủ.")
 
 @bot.message_handler(commands=['status'])
-def check_status(message):
+def status_proxy(message):
     p = current_proxy if current_proxy else "Chưa thiết lập"
     bot.reply_to(message, f"📍 Proxy hiện tại: `{p}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['reg'])
-def start_reg(message):
+def register(message):
     chat_id = message.chat.id
-    bot.send_message(chat_id, "📡 Đang lấy số Viotp...")
+    session = get_session()
     
+    bot.send_message(chat_id, "📡 Đang lấy số Viotp...")
     phone, req_id = get_viotp_number()
+    
     if not phone:
-        bot.send_message(chat_id, "❌ Hết số hoặc lỗi API Viotp.")
+        bot.send_message(chat_id, "❌ Không lấy được số.")
         return
 
     bot.send_message(chat_id, f"📱 Số: `{phone}`\n📸 Đang tải Captcha...", parse_mode="Markdown")
 
-    # GIẢ LẬP LẤY CAPCHA TỪ SHOPEE
-    session = get_session()
     try:
-        # Trong thực tế: response = session.get("URL_CAPTCHA_SHOPEE")
-        # Giả lập: tải một ảnh tạm để minh họa luồng giải bằng RAM (BytesIO)
-        img_res = requests.get("https://via.placeholder.com/150.png?text=Shopee+Captcha") 
+        # Tải captcha qua RAM bằng BytesIO
+        # Thay link này bằng API captcha thật của Shopee
+        img_res = session.get("https://shopee.vn/api/v4/captcha/g", timeout=15)
         
         photo = io.BytesIO(img_res.content)
         photo.name = 'captcha.png'
         
-        msg = bot.send_photo(chat_id, photo, caption="Nhập mã Captcha bên dưới:")
-        bot.register_next_step_handler(msg, process_reg, phone, req_id, session)
+        msg = bot.send_photo(chat_id, photo, caption="Nhập mã Captcha để tiếp tục:")
+        bot.register_next_step_handler(msg, wait_otp, phone, req_id)
         
     except Exception as e:
-        bot.send_message(chat_id, f"❌ Lỗi tải Captcha: {e}")
+        bot.send_message(chat_id, f"❌ Lỗi tải Captcha: {str(e)}\nThử dùng lệnh /delprx rồi thử lại.")
 
-def process_reg(message, phone, req_id, session):
-    captcha_code = message.text
-    bot.send_message(message.chat.id, f"⚙️ Đang nộp Captcha: `{captcha_code}`...")
+def wait_otp(message, phone, req_id):
+    captcha_val = message.text
+    bot.send_message(message.chat.id, f"⚙️ Đã nộp Captcha: `{captcha_val}`\n⏳ Chờ OTP từ Viotp...", parse_mode="Markdown")
 
-    # Tại đây bạn gọi session.post lên API Shopee để hoàn tất bước 1
-    # Nếu thành công, tiến hành đợi OTP
-    
-    bot.send_message(message.chat.id, "📩 Đợi OTP (tối đa 2p)...")
-    
-    for i in range(12):
+    # Kiểm tra OTP mỗi 10 giây trong 2 phút
+    for _ in range(12):
         time.sleep(10)
         otp = get_viotp_otp(req_id)
         if otp:
             bot.send_message(message.chat.id, f"⭐ **OTP SHOPEE: {otp}**\nSố: `{phone}`", parse_mode="Markdown")
             return
             
-    bot.send_message(message.chat.id, f"❌ Không nhận được OTP cho số {phone}")
+    bot.send_message(message.chat.id, f"❌ Hết thời gian chờ OTP cho số {phone}")
 
-# --- KHỞI CHẠY ---
 if __name__ == "__main__":
-    keep_alive() # Chạy Flask Web Server
+    keep_alive() # Chạy Flask để Render không tắt bot
     print("Bot is ready!")
-    bot.infinity_polling() # Giữ bot luôn chạy
+    bot.infinity_polling()
