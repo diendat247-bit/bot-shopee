@@ -8,7 +8,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CẤU HÌNH ---
 BOT_TOKEN = '8652285031:AAHOQGKYkt0LOArCGOQi8xljO1Yc0nLCGDM'
-VIOTP_TOKEN = '7b2304b16f804e12a5e9907d2f39d8f5'
+VIOTP_TOKEN = '19ff88d563be40ebac2c3103cdf80c2c'
 SERVICE_ID_FB = '1' 
 
 bot = telebot.TeleBot(BOT_TOKEN)
