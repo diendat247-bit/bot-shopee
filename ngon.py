@@ -9,8 +9,8 @@ import os
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CẤU HÌNH (Sử dụng biến môi trường hoặc thay trực tiếp) ---
-BOT_TOKEN = os.getenv('8652285031:AAHOQGKYkt0LOArCGOQi8xljO1Yc0nLCGDM')
-VIOTP_TOKEN = os.getenv('19ff88d563be40ebac2c3103cdf80c2c')
+BOT_TOKEN = ('8652285031:AAHOQGKYkt0LOArCGOQi8xljO1Yc0nLCGDM')
+VIOTP_TOKEN = ('19ff88d563be40ebac2c3103cdf80c2c')
 SERVICE_ID_FB = '1' 
 PASSWORD_DEFAULT = "Matkhau722010@"
 
