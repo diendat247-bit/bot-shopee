@@ -21,17 +21,13 @@ from telegram.ext import (
 
 load_dotenv()
 
-# ================= CẤU HÌNH BIẾN MÔI TRƯỜNG =================
-TELEGRAM_TOKEN = os.environ.get("8652285031:AAEI8N90VC8Aha7rLrx1FMevllksAt4bUSE")
-VIOTP_TOKEN = os.environ.get("19ff88d563be40ebac2c3103cdf80c2c")
+# ================= CẤU HÌNH TRỰC TIẾP =================
+# Thay các chuỗi dưới đây bằng Token thật của bạn
+TELEGRAM_TOKEN = "8652285031:AAEI8N90VC..." # Điền token bot vào đây
+VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c" # Điền token ViOTP vào đây
+ADMIN_IDS = [8470245336] # Điền ID số của bạn vào đây
 
-# SỬA TẠI ĐÂY: Lấy danh sách ID Admin từ biến môi trường ADMIN_IDS
-raw_admins = os.environ.get("ADMIN_IDS", "0")
-try:
-    # Hỗ trợ nhập nhiều ID cách nhau orbằng dấu phẩy, vd: 12345,67890
-    ADMIN_IDS = [int(x.strip()) for x in raw_admins.split(",") if x.strip().isdigit()]
-except Exception:
-    ADMIN_IDS = 
+# Giữ nguyên các dòng dưới
 BASE_URL = "https://api.viotp.com"
 PORT = int(os.environ.get("PORT", 10000))
 
