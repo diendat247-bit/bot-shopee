@@ -24,12 +24,14 @@ load_dotenv()
 # ================= CẤU HÌNH BIẾN MÔI TRƯỜNG =================
 TELEGRAM_TOKEN = os.environ.get("8652285031:AAEI8N90VC8Aha7rLrx1FMevllksAt4bUSE")
 VIOTP_TOKEN = os.environ.get("19ff88d563be40ebac2c3103cdf80c2c")
-raw_admins = os.environ.get("8470245336", os.environ.get("8470245336", "0"))
+
+# SỬA TẠI ĐÂY: Lấy danh sách ID Admin từ biến môi trường ADMIN_IDS
+raw_admins = os.environ.get("8470245336", "0")
 try:
+    # Hỗ trợ nhập nhiều ID cách nhau bằng dấu phẩy, vd: 12345,67890
     ADMIN_IDS = [int(x.strip()) for x in raw_admins.split(",") if x.strip().isdigit()]
 except Exception:
-    ADMIN_IDS = []
-
+    ADMIN_IDS = 
 BASE_URL = "https://api.viotp.com"
 PORT = int(os.environ.get("PORT", 10000))
 
