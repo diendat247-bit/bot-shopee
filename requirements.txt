@@ -1,7 +1,5 @@
-pyTelegramBotAPI
-requests
-playwright
-playwright-stealth
-flask
-urllib3
+python-telegram-bot==20.8
 requests[socks]
+Pillow
+python-dotenv
+]
