@@ -21,7 +21,7 @@ from telegram.ext import (
 load_dotenv()
 
 # ================= CẤU HÌNH =================
-TELEGRAM_TOKEN = "8652285031:AAEI8N90VC8Aha7rLrx1FMevllksAt4bUSE" 
+TELEGRAM_TOKEN = "8652285031:AAGqfFqrEWMa0y9_EOhFXVrnZXhDfzIPvCM" 
 VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c" 
 ADMIN_IDS = [8470245336] # Điền ID của bạn vào đây (dạng số)
 
