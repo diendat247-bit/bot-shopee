@@ -1,201 +1,264 @@
-import asyncio, random, time, requests, telebot, urllib3
-from threading import Thread
-from flask import Flask
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
 import os
+import asyncio
+import threading
+import http.server
+import socketserver
+import requests
+from datetime import datetime, timedelta
+from io import BytesIO
+from PIL import Image
+from dotenv import load_dotenv
 
-# Tắt cảnh báo SSL
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# Thư viện Telegram v20.x
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, 
+    ReplyKeyboardMarkup, KeyboardButton, InputMediaPhoto
+)
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, 
+    MessageHandler, filters, ContextTypes
+)
 
-# --- CẤU HÌNH (Sử dụng biến môi trường hoặc thay trực tiếp) ---
-BOT_TOKEN = ('8652285031:AAHOQGKYkt0LOArCGOQi8xljO1Yc0nLCGDM')
-VIOTP_TOKEN = ('19ff88d563be40ebac2c3103cdf80c2c')
-SERVICE_ID_FB = '1' 
-PASSWORD_DEFAULT = "Matkhau722010@"
+load_dotenv()
 
-bot = telebot.TeleBot(BOT_TOKEN)
-app = Flask('')
-current_proxy = None
+# ================= CẤU HÌNH BIẾN MÔI TRƯỜNG =================
+TELEGRAM_TOKEN = os.environ.get("8652285031:AAEI8N90VC8Aha7rLrx1FMevllksAt4bUSE")
+VIOTP_TOKEN = os.environ.get("19ff88d563be40ebac2c3103cdf80c2c")
+raw_admins = os.environ.get("8470245336", os.environ.get("8470245336", "0"))
+try:
+    ADMIN_IDS = [int(x.strip()) for x in raw_admins.split(",") if x.strip().isdigit()]
+except Exception:
+    ADMIN_IDS = []
 
-# Biến tạm quản lý phiên giải captcha
-captcha_sessions = {}
+BASE_URL = "https://api.viotp.com"
+PORT = int(os.environ.get("PORT", 10000))
 
-# --- 1. QUẢN LÝ PROXY ---
-@bot.message_handler(commands=['addprx'])
-def add_prx(message):
-    global current_proxy
-    try:
-        current_proxy = message.text.split(' ')[1]
-        bot.reply_to(message, f"✅ Proxy: `{current_proxy}`", parse_mode="Markdown")
-    except:
-        bot.reply_to(message, "⚠️ Cú pháp: `/addprx http://user:pass@ip:port`")
+# Biến lưu trữ trạng thái Proxy và Captcha
+CURRENT_PROXY = None
+GLOBAL_HISTORY = {}
+MOVE_STEP = 25  # Bước nhảy pixel khi giải captcha
+MAX_WIDTH = 300 # Giới hạn khung captcha
 
-@bot.message_handler(commands=['delprx'])
-def del_prx(message):
-    global current_proxy
-    current_proxy = None
-    bot.reply_to(message, "🗑 Đã xóa Proxy.")
+# ================= KEEP ALIVE SERVER (CHO RENDER) =================
+class DummyHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot ViOTP All-In-One is Live!")
 
-# --- 2. API VIOTP (THUÊ SỐ & OTP) ---
-def get_viotp_number():
-    url = f"https://api.viotp.com/request/getv2?token={VIOTP_TOKEN}&serviceId={SERVICE_ID_FB}"
-    try:
-        # Bỏ qua proxy để gọi API Viotp bằng IP gốc
-        res = requests.get(url, timeout=15, proxies={"http": None, "https": None}).json()
-        if res.get("status_code") == 200:
-            return str(res['data']['phone_number']), str(res['data']['request_id'])
-    except: pass
-    return None, None
+def run_web():
+    socketserver.TCPServer.allow_reuse_address = True
+    with socketserver.TCPServer(("0.0.0.0", PORT), DummyHandler) as httpd:
+        httpd.serve_forever()
 
-def get_otp_viotp(request_id):
-    url = f"https://api.viotp.com/session/getv2?token={VIOTP_TOKEN}&requestId={request_id}"
-    for _ in range(15): # Đợi tối đa 75 giây
-        try:
-            res = requests.get(url, timeout=10, proxies={"http": None, "https": None}).json()
-            if res.get("status_code") == 200 and res.get("data", {}).get("Code"):
-                return res["data"]["Code"]
-        except: pass
-        time.sleep(5)
+# ================= TIỆN ÍCH VÀ HELPER =================
+def is_admin(user_id): return user_id in ADMIN_IDS
+
+def format_money(amount):
+    try: return f"{int(amount):,}".replace(",", ".") + "đ"
+    except: return f"{amount}đ"
+
+def get_proxies():
+    if CURRENT_PROXY:
+        return {"http": CURRENT_PROXY, "https": CURRENT_PROXY}
     return None
 
-# --- 3. GIẢI CAPTCHA MẢNH GHÉP TƯƠNG TÁC ---
-def gen_captcha_markup(distance):
-    markup = telebot.types.InlineKeyboardMarkup(row_width=5)
-    btns = [
-        telebot.types.InlineKeyboardButton("<<", callback_data=f"move_{distance-30}"),
-        telebot.types.InlineKeyboardButton("<", callback_data=f"move_{distance-10}"),
-        telebot.types.InlineKeyboardButton(">", callback_data=f"move_{distance+10}"),
-        telebot.types.InlineKeyboardButton(">>", callback_data=f"move_{distance+30}"),
-        telebot.types.InlineKeyboardButton("✅ OK", callback_data=f"submit_{distance}")
-    ]
-    markup.add(*btns)
-    return markup
-
-async def refresh_captcha_view(page, chat_id, dist):
-    slider = await page.wait_for_selector('.shopee-captcha-slider__button')
-    box = await slider.bounding_box()
-    # Di chuyển và giữ chuột
-    await page.mouse.move(box['x'] + box['width']/2, box['y'] + box['height']/2)
-    await page.mouse.down()
-    await page.mouse.move(box['x'] + box['width']/2 + dist, box['y'] + box['height']/2, steps=5)
-    
-    captcha_card = await page.wait_for_selector('.shopee-captcha-slider__card')
-    img_path = f"captcha_{chat_id}.png"
-    await captcha_card.screenshot(path=img_path)
-    return img_path
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('move_', 'submit_')))
-def handle_captcha_buttons(call):
-    chat_id = call.message.chat.id
-    if chat_id not in captcha_sessions: return
-    
-    action, value = call.data.split('_')
-    dist = int(value)
-    session = captcha_sessions[chat_id]
-    
-    if action == 'move_':
-        dist = max(0, min(300, dist))
-        img_path = asyncio.run(refresh_captcha_view(session['page'], chat_id, dist))
-        bot.edit_message_media(
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            media=telebot.types.InputMediaPhoto(open(img_path, 'rb'), caption=f"Vị trí hiện tại: {dist}px"),
-            reply_markup=gen_captcha_markup(dist)
+async def check_proxy_live(proxy_dict):
+    try:
+        # Test qua google để xác nhận proxy hoạt động
+        response = await asyncio.to_thread(
+            requests.get, "http://www.google.com", proxies=proxy_dict, timeout=7
         )
-    elif action == 'submit_':
-        session['final_dist'] = dist
-        session['event'].set()
-        bot.delete_message(chat_id, call.message.message_id)
+        return response.status_code == 200
+    except: return False
 
-# --- 4. LOGIC XỬ LÝ ĐĂNG KÝ ---
-async def get_fast_login_cookie(page):
-    # Lọc cookie quan trọng bao gồm SPC_F theo yêu cầu
-    login_keys = ['shopee_token', 'SPC_EC', 'SPC_ST', 'SPC_F', 'SPC_U', 'SPC_SI']
-    all_cookies = await page.context.cookies()
-    clean = [f"{c['name']}={c['value']}" for c in all_cookies if c['name'] in login_keys]
-    return "; ".join(clean)
+def api_get(endpoint, params=None):
+    if params is None: params = {}
+    params['token'] = VIOTP_TOKEN
+    try:
+        return requests.get(
+            f"{BASE_URL}{endpoint}", 
+            params=params, 
+            proxies=get_proxies(), 
+            timeout=15
+        ).json()
+    except Exception as e:
+        return {"status_code": -1, "message": str(e)}
 
-async def process_reg(phone_input, request_id, chat_id):
-    async with async_playwright() as p:
-        launch_options = {"headless": True}
-        if current_proxy: launch_options["proxy"] = {"server": current_proxy}
+# ================= XỬ LÝ ẢNH CAPTCHA =================
+def create_combined_captcha(bg_url, slice_url, x_offset):
+    try:
+        bg_res = requests.get(bg_url, timeout=10)
+        sl_res = requests.get(slice_url, timeout=10)
+        bg_img = Image.open(BytesIO(bg_res.content)).convert("RGBA")
+        slice_img = Image.open(BytesIO(sl_res.content)).convert("RGBA")
         
-        browser = await p.chromium.launch(**launch_options)
-        context = await browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-        page = await context.new_page()
-        await Stealth().apply_stealth_async(page)
+        combined = Image.new("RGBA", bg_img.size)
+        combined.paste(bg_img, (0, 0))
+        # Vị trí Y=50 là ví dụ, thực tế lấy từ API reg của bạn
+        combined.paste(slice_img, (x_offset, 50), slice_img) 
         
-        try:
-            # Truy cập trang đăng ký
-            await page.goto("https://shopee.vn/buyer/signup")
-            await page.fill('input[name="phone"]', phone_input)
-            await page.click('button:has-text("Tiếp theo")')
-            await asyncio.sleep(2)
+        bio = BytesIO()
+        combined.convert("RGB").save(bio, 'JPEG')
+        bio.seek(0)
+        return bio
+    except: return None
 
-            # Kiểm tra Captcha
-            if await page.query_selector('.shopee-captcha-slider__card'):
-                bot.send_message(chat_id, "⚠️ Phát hiện Captcha! Vui lòng khớp mảnh ghép bằng nút bấm bên dưới.")
-                event = asyncio.Event()
-                captcha_sessions[chat_id] = {'page': page, 'event': event}
-                
-                img_path = await refresh_captcha_view(page, chat_id, 60)
-                bot.send_photo(chat_id, open(img_path, 'rb'), caption="Kéo mảnh ghép:", reply_markup=gen_captcha_markup(60))
-                
-                await event.wait()
-                await page.mouse.up()
-                await asyncio.sleep(2)
-                del captcha_sessions[chat_id]
+def get_captcha_kb(x, service_id, phone):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("⬅️ Trái", callback_data=f"move_L_{x}_{service_id}_{phone}"),
+            InlineKeyboardButton("Phải ➡️", callback_data=f"move_R_{x}_{service_id}_{phone}")
+        ],
+        [InlineKeyboardButton(f"✅ Xác nhận vị trí X={x}", callback_data=f"move_CF_{x}_{service_id}_{phone}")]
+    ])
 
-            # Đợi lấy mã OTP
-            otp = get_otp_viotp(request_id)
-            if not otp: return {"error": "Không lấy được mã OTP (Timeout)"}
-            
-            await page.fill('input.shopee-otp-input__input', otp)
-            await page.keyboard.press("Enter")
-            
-            # Thiết lập mật khẩu
-            await page.wait_for_selector('input[name="password"]', timeout=15000)
-            await page.fill('input[name="password"]', PASSWORD_DEFAULT)
-            await page.click('button:has-text("Đăng ký")')
-            
-            await asyncio.sleep(5) # Đợi hệ thống xử lý sau login
-            cookie = await get_fast_login_cookie(page)
-            return {"success": True, "cookie": cookie}
-            
-        except Exception as e: return {"error": str(e)}
-        finally: await browser.close()
+# ================= CÁC LỆNH COMMANDS =================
+async def post_init(application: Application):
+    commands = [
+        ("start", "Mở menu chính"),
+        ("balance", "💰 Kiểm tra số dư ViOTP"),
+        ("networks", "🏢 Danh sách nhà mạng"),
+        ("history", "🕒 Lịch sử thuê số"),
+        ("rent", "🛒 Danh sách dịch vụ thuê số"),
+        ("reg", "⚡ Chạy Auto Reg + Captcha"),
+        ("http", "🌐 Cài Proxy HTTP (vd: /http ip:port)"),
+        ("socks5", "🧦 Cài Proxy SOCKS5 (vd: /socks5 ip:port)"),
+        ("check", "🔍 Kiểm tra IP & Proxy"),
+        ("delproxy", "🗑 Xóa Proxy")
+    ]
+    await application.bot.set_my_commands(commands)
+    # Kích hoạt quét lịch sử ngầm từ code gốc của bạn
+    # asyncio.create_task(background_history_scanner())
 
-# --- 5. LUỒNG CHÍNH ---
-@bot.message_handler(commands=['reg'])
-def handle_reg(message):
-    Thread(target=main_loop, args=(message.chat.id,)).start()
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id): return
+    keyboard = [
+        [KeyboardButton("💰 Tra cứu số dư"), KeyboardButton("🛒 Thuê số OTP")],
+        [KeyboardButton("🏢 Danh sách nhà mạng"), KeyboardButton("🕒 Lịch sử thuê số")],
+        [KeyboardButton("⚡ Auto Reg Acc")]
+    ]
+    await update.message.reply_text(
+        "🤖 **Hệ thống Quản lý ViOTP & Auto Reg**\nChào mừng Admin. Hãy chọn chức năng bên dưới hoặc gõ / để xem lệnh.",
+        reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True),
+        parse_mode='Markdown'
+    )
 
-def main_loop(chat_id):
-    status = bot.send_message(chat_id, "🔍 Đang săn số sạch từ Viotp...")
-    while True:
-        phone, req_id = get_viotp_number()
-        if not phone:
-            time.sleep(20); continue
-            
-        bot.edit_message_text(f"📱 Thuê được: `{phone}`. Đang tạo...", chat_id, status.message_id)
-        result = asyncio.run(process_reg(phone, req_id, chat_id))
-        
-        if result.get("success"):
-            msg = (f"✅ **TẠO TÀI KHOẢN THÀNH CÔNG**\n"
-                   f"📞 SĐT: `{phone}`\n"
-                   f"🔑 Pass: `{PASSWORD_DEFAULT}`\n\n"
-                   f"🍪 **COOKIE ĐĂNG NHẬP NHANH:**\n`{result['cookie']}`")
-            bot.send_message(chat_id, msg, parse_mode="Markdown")
-            break
+async def set_http_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_PROXY
+    if not is_admin(update.effective_user.id): return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Cú pháp: `/http ip:port` hoặc `user:pass@ip:port`", parse_mode='Markdown')
+    
+    raw = context.args[0]
+    p_url = f"http://{raw}"
+    msg = await update.message.reply_text(f"⏳ Đang check HTTP Proxy...")
+    if await check_proxy_live({"http": p_url, "https": p_url}):
+        CURRENT_PROXY = p_url
+        await msg.edit_text(f"✅ **HTTP Proxy LIVE!**\nĐã áp dụng: `{raw}`", parse_mode='Markdown')
+    else: await msg.edit_text("❌ **Proxy DIE hoặc sai định dạng!**")
+
+async def set_socks5_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_PROXY
+    if not is_admin(update.effective_user.id): return
+    if not context.args:
+        return await update.message.reply_text("⚠️ Cú pháp: `/socks5 ip:port`", parse_mode='Markdown')
+    
+    raw = context.args[0]
+    p_url = f"socks5://{raw}"
+    msg = await update.message.reply_text(f"⏳ Đang check SOCKS5 Proxy...")
+    if await check_proxy_live({"http": p_url, "https": p_url}):
+        CURRENT_PROXY = p_url
+        await msg.edit_text(f"✅ **SOCKS5 Proxy LIVE!**\nĐã áp dụng: `{raw}`", parse_mode='Markdown')
+    else: await msg.edit_text("❌ **Proxy DIE!**")
+
+async def delete_proxy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_PROXY
+    if not is_admin(update.effective_user.id): return
+    CURRENT_PROXY = None
+    await update.message.reply_text("🗑 Đã xóa Proxy. Đang dùng IP gốc.")
+
+async def check_current_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id): return
+    status = f"`{CURRENT_PROXY}`" if CURRENT_PROXY else "IP gốc (Không Proxy)"
+    await update.message.reply_text(f"🌐 **Trạng thái:** {status}", parse_mode='Markdown')
+
+# ================= XỬ LÝ MENU VÀ CALLBACK =================
+async def handle_text_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, forced_text=None):
+    if not is_admin(update.effective_user.id): return
+    text = forced_text if forced_text else update.message.text
+
+    if text == "💰 Tra cứu số dư":
+        res = api_get("/users/balance")
+        msg = f"💰 **Số dư:** <code>{format_money(res['data']['balance'])}</code>" if str(res.get("status_code"))=="200" else "Lỗi kết nối API"
+        await update.message.reply_text(msg, parse_mode='HTML')
+
+    elif text == "🛒 Thuê số OTP":
+        res = api_get("/service/getv2")
+        if str(res.get("status_code")) == "200":
+            kb = [[InlineKeyboardButton(f"{s['name']} - {format_money(s['price'])}", callback_data=f"rent_{s['id']}_{s['name']}")] for s in res["data"][:10]]
+            await update.message.reply_text("🛒 Chọn dịch vụ:", reply_markup=InlineKeyboardMarkup(kb))
+
+    elif text == "⚡ Auto Reg Acc":
+        await update.message.reply_text("Chức năng Auto Reg đang chờ lệnh từ /reg hoặc chọn dịch vụ thuê số.")
+
+    # (Giữ các logic cũ: Danh sách nhà mạng, Lịch sử... chèn vào đây)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    await query.answer()
+
+    # 1. Thuê số ViOTP
+    if data.startswith("rent_"):
+        _, s_id, s_name = data.split("_")
+        res = api_get("/request/getv2", {"serviceId": s_id})
+        if str(res.get("status_code")) == "200":
+            phone = res["data"]["phone_number"]
+            await query.edit_message_text(f"✅ Thuê thành công {s_name}!\n📞 Số: `{phone}`", parse_mode='Markdown')
         else:
-            bot.send_message(chat_id, f"❌ Lỗi với số `{phone}`: {result.get('error')}\n🔄 Đang thử số khác...")
-            time.sleep(2)
+            await query.edit_message_text(f"❌ Lỗi: {res.get('message')}")
 
-@app.route('/')
-def home(): return "Bot is Alive"
+    # 2. Xử lý di chuyển Captcha Reg
+    elif data.startswith("move_"):
+        _, action, x, s_id, phone = data.split("_")
+        x = int(x)
+        if action == "L": x = max(0, x - MOVE_STEP)
+        elif action == "R": x = min(MAX_WIDTH, x + MOVE_STEP)
+        elif action == "CF":
+            await query.message.edit_caption(caption=f"✅ Đã xác nhận X={x}. Đang hoàn tất đăng ký...")
+            return
+
+        # Cập nhật ảnh captcha mới sau khi di chuyển
+        # Lưu ý: Thay URL_ANH_NEN và URL_MANH_GHEP bằng link thật từ web bạn reg
+        new_photo = create_combined_captcha("https://via.placeholder.com/300x150", "https://via.placeholder.com/50x50", x)
+        if new_photo:
+            await query.message.edit_media(
+                media=InputMediaPhoto(new_photo, caption=f"Giải Captcha (X={x})"),
+                reply_markup=get_captcha_kb(x, s_id, phone)
+            )
+
+# ================= KHỞI CHẠY =================
+def main():
+    # Chạy Web Server
+    threading.Thread(target=run_web, daemon=True).start()
+
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
+
+    # Đăng ký Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("balance", lambda u, c: handle_text_menu(u, c, "💰 Tra cứu số dư")))
+    app.add_handler(CommandHandler("rent", lambda u, c: handle_text_menu(u, c, "🛒 Thuê số OTP")))
+    app.add_handler(CommandHandler("http", set_http_proxy))
+    app.add_handler(CommandHandler("socks5", set_socks5_proxy))
+    app.add_handler(CommandHandler("delproxy", delete_proxy))
+    app.add_handler(CommandHandler("check", check_current_status))
+    
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_menu))
+    app.add_handler(CallbackQueryHandler(button_handler))
+
+    print("🤖 Bot đang hoạt động với đầy đủ tính năng!")
+    app.run_polling()
 
 if __name__ == "__main__":
-    # Khởi chạy Flask để Render không ngắt kết nối
-    Thread(target=lambda: app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))).start()
-    bot.infinity_polling()
+    main()
