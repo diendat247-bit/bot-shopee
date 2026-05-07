@@ -21,9 +21,9 @@ from telegram.ext import (
 load_dotenv()
 
 # ================= CẤU HÌNH =================
-TELEGRAM_TOKEN = "8652285031:AAEI8N90VC..." 
+TELEGRAM_TOKEN = "8652285031:AAEI8N90VC8Aha7rLrx1FMevllksAt4bUSE" 
 VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c" 
-ADMIN_IDS = [6117382942] # Điền ID của bạn vào đây (dạng số)
+ADMIN_IDS = [8470245336] # Điền ID của bạn vào đây (dạng số)
 
 BASE_URL = "https://api.viotp.com"
 PORT = int(os.environ.get("PORT", 10000))
