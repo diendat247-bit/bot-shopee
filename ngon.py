@@ -19,7 +19,7 @@ from telegram.ext import (
 )
 
 # ================= CẤU HÌNH TRỰC TIẾP (DÁN TOKEN VÀO ĐÂY) =================
-TELEGRAM_TOKEN = "8792394937:AAEETG8JNVar5-2LKApKWehWEG0L1lSeUxE" # Dán Token BotFather
+TELEGRAM_TOKEN = "8792394937:AAFdNETbddYXr_ZyU-HTU77aIFjv0bhaP2k" # Dán Token BotFather
 VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c"     # Dán Token ViOTP
 ADMIN_IDS = [8470245336]                            # ID Admin của bạn
 
