@@ -21,7 +21,7 @@ from telegram.ext import (
 load_dotenv()
 
 # ================= CẤU HÌNH =================
-TELEGRAM_TOKEN = "8652285031:AAGqfFqrEWMa0y9_EOhFXVrnZXhDfzIPvCM" 
+TELEGRAM_TOKEN = "8652285031:AAGgmq0kiOFVELzhfC96qw1DklLZYFX1Y-w" 
 VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c" 
 ADMIN_IDS = [8470245336] # Điền ID của bạn vào đây (dạng số)
 
@@ -137,24 +137,23 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await query.edit_message_text(f"❌ Lỗi: {res.get('message', 'Hết số hoặc lỗi hệ thống')}")
 
-# ================= KHỞI CHẠY =================
+# ================ KHỞI CHẠY ================
 def main():
+    # Chạy web server ở luồng riêng (để giữ Render không bị tắt)
     threading.Thread(target=run_web, daemon=True).start()
+    
+    # Khởi tạo bot
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
+    # Thêm tất cả các Handler vào đây
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_menu))
-    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(button_callback)) 
+    # Lưu ý: button_callback là tên hàm xử lý nút bấm của bạn
 
     print("🤖 Bot ViOTP đã sẵn sàng!")
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
-
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    print("🤖 Bot đang hoạt động với đầy đủ tính năng!")
+    
+    # Bắt đầu nhận tin nhắn
     app.run_polling()
 
 if __name__ == "__main__":
