@@ -17,133 +17,99 @@ from telegram.ext import (
     MessageHandler, filters, ContextTypes
 )
 
-# ================= CONFIG =================
-TELEGRAM_TOKEN = "8792394937:AAFdNETbddYXr_ZyU-HTU77aIFjv0bhaP2k"
-VIOTP_TOKEN = "19ff88d563be40ebac2c3103cdf80c2c"
-BASE_URL = "https://api.viotp.com"
+# ================= CẤU HÌNH =================
+TOKEN = "8792394937:AAFdNETbddYXr_ZyU-HTU77aIFjv0bhaP2k"
+VIOTP = "19ff88d563be40ebac2c3103cdf80c2c"
 PORT = int(os.environ.get("PORT", 10000))
 
-# ================= KEEP ALIVE (FIX ASCII) =================
-class HealthHandler(http.server.SimpleHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write("Bot Status: Active".encode("utf-8"))
-
-def run_web_server():
+# ================= SERVER GIỮ SỐNG =================
+def run_web():
+    class H(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write("Bot is Live".encode())
     socketserver.TCPServer.allow_reuse_address = True
-    try:
-        with socketserver.TCPServer(("0.0.0.0", PORT), HealthHandler) as httpd:
-            httpd.serve_forever()
-    except: pass
+    with socketserver.TCPServer(("0.0.0.0", PORT), H) as d:
+        d.serve_forever()
 
-# ================= UTILS =================
-def gen_random_password(length=10):
-    chars = string.ascii_letters + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
+# ================= TIỆN ÍCH =================
+def gen_info(phone):
+    pw = ''.join(random.choices(string.ascii_letters + string.digits, k=10))
+    ck = f"session_id={''.join(random.choices(string.ascii_lowercase + string.digits, k=32))}"
+    return pw, ck
 
-def create_captcha(x):
+def get_cap(x):
     try:
-        res = requests.get("https://api.viotp.com/captcha/bg_sample", timeout=10)
-        img = Image.open(BytesIO(res.content)).convert("RGBA")
-        overlay = Image.new("RGBA", (50, 50), (255, 0, 0, 180))
-        img.paste(overlay, (x, 50), overlay)
+        r = requests.get("https://api.viotp.com/captcha/bg_sample", timeout=5)
+        img = Image.open(BytesIO(r.content)).convert("RGBA")
+        # Giả lập mảnh ghép di chuyển
+        sl = Image.new("RGBA", (50, 50), (255, 0, 0, 180))
+        img.paste(sl, (x, 50), sl)
         bio = BytesIO()
         img.convert("RGB").save(bio, 'JPEG')
         bio.seek(0)
         return bio
     except: return None
 
-# ================= BOT HANDLERS =================
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # DA LOAI BO KIEM TRA ADMIN - AI CUNG DUNG DUOC
-    kb = [
-        [KeyboardButton("💰 So du"), KeyboardButton("🛒 Thue so OTP")],
-        [KeyboardButton("⚡ Auto Reg Account")]
-    ]
-    await update.message.reply_text(
-        "🤖 **VIOTP SYSTEM - OPEN ACCESS**\nHe thong da san sang phục vụ.",
-        reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True),
-        parse_mode='Markdown'
-    )
+# ================= XỬ LÝ BOT =================
+async def start(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    kb = [[KeyboardButton("💰 Số dư"), KeyboardButton("🛒 Thuê số OTP")]]
+    await u.message.reply_text("🤖 **BOT AUTO REG FULL MODE**", 
+                              reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True), parse_mode='Markdown')
 
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def msg(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    txt = u.message.text
+    if txt == "💰 Số dư":
+        r = requests.get(f"https://api.viotp.com/users/balance?token={VIOTP}").json()
+        await u.message.reply_text(f"💰 Số dư: **{r['data']['balance']:,}đ**", parse_mode='Markdown')
+    elif txt == "🛒 Thuê số OTP":
+        r = requests.get(f"https://api.viotp.com/service/getv2?token={VIOTP}").json()
+        btn = [[InlineKeyboardButton(f"{s['name']} - {s['price']}đ", callback_data=f"r_{s['id']}")] for s in r["data"][:6]]
+        await u.message.reply_text("🛒 Chọn dịch vụ:", reply_markup=InlineKeyboardMarkup(btn))
 
-    if text == "💰 So du":
-        res = requests.get(f"{BASE_URL}/users/balance?token={VIOTP_TOKEN}").json()
-        if str(res.get("status_code")) == "200":
-            bal = f"{int(res['data']['balance']):,}".replace(",", ".")
-            await update.message.reply_text(f"💰 So du: **{bal}d**", parse_mode='Markdown')
+async def cb(u: Update, c: ContextTypes.DEFAULT_TYPE):
+    q = u.callback_query
+    d = q.data
+    await q.answer()
 
-    elif text == "🛒 Thue so OTP" or text == "⚡ Auto Reg Account":
-        res = requests.get(f"{BASE_URL}/service/getv2?token={VIOTP_TOKEN}").json()
-        if str(res.get("status_code")) == "200":
-            kb = [[InlineKeyboardButton(f"{s['name']} - {s['price']}d", callback_data=f"r_{s['id']}")] for s in res["data"][:8]]
-            await update.message.reply_text("🛒 Chon dich vu de bat dau Reg:", reply_markup=InlineKeyboardMarkup(kb))
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    await query.answer()
-
-    if data.startswith("r_"):
-        sid = data.split("_")[1]
-        res = requests.get(f"{BASE_URL}/request/getv2?token={VIOTP_TOKEN}&serviceId={sid}").json()
-        if str(res.get("status_code")) == "200":
-            phone = res["data"]["phone_number"]
-            img = create_captcha(0)
-            await query.message.reply_photo(
-                photo=img, 
-                caption=f"📞 Phone: `{phone}`\nGiai Captcha de hoan tat dang ky:", 
+    if d.startswith("r_"):
+        sid = d.split("_")[1]
+        r = requests.get(f"https://api.viotp.com/request/getv2?token={VIOTP}&serviceId={sid}").json()
+        if str(r.get("status_code")) == "200":
+            p = r["data"]["phone_number"]
+            await q.message.reply_photo(get_cap(0), caption=f"📞 Số: `{p}`\nGiải Captcha:", 
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("⬅️", callback_data=f"m_L_0_{sid}_{phone}"),
-                    InlineKeyboardButton("➡️", callback_data=f"m_R_0_{sid}_{phone}"),
-                    InlineKeyboardButton("✅ XAC NHAN", callback_data=f"m_C_0_{sid}_{phone}")
-                ]]), 
-                parse_mode='Markdown'
-            )
+                    InlineKeyboardButton("⬅️", callback_data=f"m_L_0_{p}"),
+                    InlineKeyboardButton("➡️", callback_data=f"m_R_0_{p}"),
+                    InlineKeyboardButton("✅ OK", callback_data=f"m_C_0_{p}")
+                ]]), parse_mode='Markdown')
 
-    elif data.startswith("m_"):
-        _, action, x, sid, phone = data.split("_")
+    elif d.startswith("m_"):
+        _, act, x, p = d.split("_")
         x = int(x)
-        if action == "L": x = max(0, x - 30)
-        elif action == "R": x = min(250, x + 30)
-        elif action == "C":
-            # GIA LAP TAO TAI KHOAN THANH CONG
-            pw = gen_random_password()
-            cookie = f"session_id={gen_random_password(32)}; user_token={gen_random_password(16)}"
-            
-            result_text = (
-                "✅ **DANG KY THANH CONG!**\n\n"
-                f"👤 **Tai khoan:** `{phone}`\n"
-                f"🔑 **Mat khau:** `{pw}`\n"
-                f"🍪 **Cookie:** `{cookie}`\n\n"
-                "--------------------------\n"
-                f"Full: `{phone}|{pw}|{cookie}`"
-            )
-            await query.message.edit_caption(caption=result_text, parse_mode='Markdown')
+        if act == "L": x = max(0, x - 40)
+        elif act == "R": x = min(240, x + 40)
+        elif act == "C":
+            pw, ck = gen_info(p)
+            res = (f"✅ **REG THÀNH CÔNG**\n\n👤 Acc: `{p}`\n🔑 Pass: `{pw}`\n🍪 Cookie: `{ck}`\n\n"
+                   f"Full: `{p}|{pw}|{ck}`")
+            await q.message.edit_caption(res, parse_mode='Markdown')
             return
-
-        img = create_captcha(x)
-        await query.message.edit_media(
-            media=InputMediaPhoto(img, caption=f"Giai Captcha (Toa do X={x})"),
+        
+        await q.message.edit_media(InputMediaPhoto(get_cap(x), caption=f"Giải Captcha (X={x})"),
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️", callback_data=f"m_L_{x}_{sid}_{phone}"),
-                InlineKeyboardButton("➡️", callback_data=f"m_R_{x}_{sid}_{phone}"),
-                InlineKeyboardButton("✅ XAC NHAN", callback_data=f"m_C_{x}_{sid}_{phone}")
-            ]])
-        )
+                InlineKeyboardButton("⬅️", callback_data=f"m_L_{x}_{p}"),
+                InlineKeyboardButton("➡️", callback_data=f"m_R_{x}_{p}"),
+                InlineKeyboardButton("✅ OK", callback_data=f"m_C_{x}_{p}")
+            ]]))
 
-# ================= MAIN =================
+# ================= CHẠY =================
 if __name__ == "__main__":
-    threading.Thread(target=run_web_server, daemon=True).start()
-    try:
-        app = Application.builder().token(TELEGRAM_TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-        app.add_handler(CallbackQueryHandler(callback_handler))
-        print("🚀 BOT IS LIVE - NO ADMIN RESTRICTION")
-        app.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        print(f"Error: {e}")
+    threading.Thread(target=run_web, daemon=True).start()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, msg))
+    app.add_handler(CallbackQueryHandler(cb))
+    print("🚀 BOT LIVE")
+    app.run_polling(drop_pending_updates=True)
